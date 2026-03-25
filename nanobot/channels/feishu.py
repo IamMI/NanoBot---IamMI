@@ -24,6 +24,10 @@ try:
         Emoji,
         P2ImMessageReceiveV1,
     )
+    from lark_oapi.api.docs.v1 import (
+        GetContentRequest,
+        GetContentResponse
+    )
     FEISHU_AVAILABLE = True
 except ImportError:
     FEISHU_AVAILABLE = False
@@ -308,3 +312,59 @@ class FeishuChannel(BaseChannel):
             
         except Exception as e:
             logger.error(f"Error processing Feishu message: {e}")
+
+    # tools
+    def _extract_doc_token_from_url(self, url):
+        """https://open.feishu.cn/document/faq/trouble-shooting/how-to-get-docs-tokens?lang=zh-CN"""
+        if '/docx/' in url:
+            token_part = url.split('/docx/')[-1]
+            doc_token = token_part.split('==')[-2] if '==' in token_part else token_part.split('?')[0]
+            doc_type = "docx"
+            return doc_token, doc_type
+        
+        elif '/docs/' in url:
+            token_part = url.split('/docs/')[-1]
+            doc_token = token_part.split('==')[-2] if '==' in token_part else token_part.split('?')[0]
+            doc_type = "doc"
+            return doc_token, doc_type
+        
+        elif '/wiki/' in url:
+            token_part = url.split('/wiki/')[-1]
+            doc_token = token_part.split('==')[-2] if '==' in token_part else token_part.split('?')[0]
+            doc_type = "wiki"
+            return doc_token, doc_type
+        
+        else:
+            raise Exception("不支持的链接格式")
+    
+    def read_file(self, remote_path: str) -> str:
+        """ Read Feishu cloud documents """
+        if not self._client:
+            logger.warning("Feishu client not initialized")
+            return ""
+
+        try:
+            doc_token = self._extract_doc_token_from_url(remote_path)[0]
+            request: GetContentRequest = GetContentRequest.builder() \
+                .doc_token(doc_token) \
+                .doc_type("docx") \
+                .content_type("markdown") \
+                .lang("zh") \
+                .build()
+
+            response: GetContentResponse = self._client.docs.v1.content.get(request)
+
+            if not response.success():
+                logger.error(
+                    f"Failed to read Feishu document, code={response.code}, "
+                    f"msg={response.msg}, log_id={response.get_log_id()}"
+                )
+            else:
+                logger.debug(f"Succeed to read Feishu document.")
+            
+            return response.data.content
+        
+        except Exception as e:
+            logger.error(f"Error reading Feishu doc '{remote_path}': {e}")
+            return ""
+            

@@ -6,6 +6,7 @@ import signal
 from pathlib import Path
 import select
 import sys
+import paramiko
 
 import typer
 from rich.console import Console
@@ -281,6 +282,27 @@ def _make_provider(config):
         provider_name=config.get_provider_name(),
     )
 
+def _make_ssh_connector(hostname: str, username: str, key_path: str, port: int):
+    """
+    构建 SSH 连接工厂函数。
+    返回一个无参可调用，每次调用建立一条新连接。
+    watcher 断线重连时会重新调用此函数。
+    """
+    def ssh_connector():
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            hostname=hostname,
+            username=username,
+            port=port,
+            key_filename=str(Path(key_path).expanduser()),
+            timeout=30,
+        )
+        client.get_transport().set_keepalive(60)
+        return client
+
+    return ssh_connector
+
 
 # ============================================================================
 # Gateway / Server
@@ -317,6 +339,9 @@ def gateway(
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
     
+    # Create channel manager
+    channels = ChannelManager(config, bus, session_manager=session_manager)
+    
     # Create agent with cron service
     agent = AgentLoop(
         bus=bus,
@@ -330,8 +355,14 @@ def gateway(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
         # custom
-        feishu_config=config.tools.web.feishu
+        feishu_config=config.tools.web.feishu,
+        channels=channels,
     )
+    
+    # Task registry
+    server_channel = channels.get_channel("server")
+    if server_channel:
+        server_channel.set_task_registry(agent.task_registry)
     
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
@@ -364,9 +395,7 @@ def gateway(
         enabled=True
     )
     
-    # Create channel manager
-    channels = ChannelManager(config, bus, session_manager=session_manager)
-    
+    # channels
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:

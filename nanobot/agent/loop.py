@@ -1,9 +1,12 @@
 """Agent loop: the core processing engine."""
 
 import asyncio
-import json
+import json, sys
 from pathlib import Path
 from typing import Any
+import paramiko
+from datetime import datetime
+from typing import Optional, Callable
 
 from loguru import logger
 
@@ -18,8 +21,13 @@ from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
+# custom
 from nanobot.agent.tools.weather import WeatherTool
 from nanobot.agent.tools.feishu import Feishu_ReadBiTable_Tool
+from nanobot.agent.task_registry import TaskRegistry
+from nanobot.agent.tools.watcher import make_watcher_tools
+from nanobot.channels.manager import ChannelManager
+
 from nanobot.agent.subagent import SubagentManager
 from nanobot.session.manager import SessionManager
 
@@ -48,6 +56,7 @@ class AgentLoop:
         cron_service: "CronService | None" = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
+        channels: Optional[ChannelManager] = None,   
         **kwargs: None
     ):
         from nanobot.config.schema import ExecToolConfig
@@ -76,16 +85,34 @@ class AgentLoop:
         )
         
         self._running = False
-        self._register_default_tools(**kwargs)
-    
-    def _register_default_tools(self, **kwargs) -> None:
+        
+        self.task_registry = TaskRegistry()
+        
+        self._register_default_tools(
+            channels=channels,
+            **kwargs
+        )
+            
+    def _register_default_tools(
+        self,
+        channels=Optional[ChannelManager],
+        **kwargs
+    ) -> None:
         """Register the default set of tools."""
         # File tools (restrict to workspace if configured)
         allowed_dir = self.workspace if self.restrict_to_workspace else None
-        self.tools.register(ReadFileTool(allowed_dir=allowed_dir))
-        self.tools.register(WriteFileTool(allowed_dir=allowed_dir))
-        self.tools.register(EditFileTool(allowed_dir=allowed_dir))
-        self.tools.register(ListDirTool(allowed_dir=allowed_dir))
+        extra_channels = {}
+        server_channel=channels.get_channel("server")
+        if server_channel and server_channel.config.hostname:
+            extra_channels.update({"server": server_channel})
+        feishu_channel=channels.get_channel("feishu")
+        if feishu_channel and feishu_channel.config.app_id and feishu_channel.config.app_secret:
+            extra_channels.update({"feishu": feishu_channel})
+        
+        self.tools.register(ReadFileTool(allowed_dir, extra_channels))
+        self.tools.register(WriteFileTool(allowed_dir, extra_channels))
+        self.tools.register(EditFileTool(allowed_dir, extra_channels))
+        self.tools.register(ListDirTool(allowed_dir, extra_channels))
         
         # Shell tool
         self.tools.register(ExecTool(
@@ -114,7 +141,17 @@ class AgentLoop:
         feishu_config = kwargs.get("feishu_config", None)
         if feishu_config is not None:
             self.tools.register(Feishu_ReadBiTable_Tool(feishu_config.app_id, feishu_config.app_secret))
-    
+
+        # Custom Server monitor
+        if server_channel and server_channel.config.hostname:
+            for tool in make_watcher_tools(
+                task_registry = self.task_registry,
+                channel       = server_channel,
+                watch_dirs    = server_channel.config.watch_dirs,
+                poll_interval = server_channel.config.poll_interval,
+            ):
+                self.tools.register(tool)
+         
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
         self._running = True
@@ -199,12 +236,30 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
             
+            # if sys.gettrace() is not None:
             # Call LLM
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
                 model=self.model
-            )
+                    )
+            # else:
+            #     from nanobot.providers.base import LLMResponse, ToolCallRequest
+                
+            #     response = LLMResponse(
+            #         content="好的，让我来读取这个飞书云文档的内容。",                                                                                 
+            #         tool_calls=[                                                                                  
+            #             ToolCallRequest(                                                                          
+            #                 id='call_2d481b52e26c4857b3627543',                                                
+            #                 name='read_file',                                                          
+            #                 arguments={'path': 'https://gxignaxje5.feishu.cn/wiki/VhsrwaRxEiXYd5k0FMfcbMLwnqb', 'context': 'feishu'}                                                                          
+            #             )                                                                                         
+            #         ],                                                                                            
+            #         finish_reason='tool_calls',                                                                   
+            #         usage={'prompt_tokens': 5764, 'completion_tokens': 159, 'total_tokens': 5923},                 
+            #         reasoning_content='用户让我读取一个飞书云文档的内容。用户说可以使用 read_file 来读取云端的文件。\n\n看一下 read_file工具的参数：\n- path: 文件路径\n- context: 可选，默认 "local"，可选值：[\'local\', \'server\',\'feishu\']\n\n所以我可以使用 context="feishu" 来读取飞书文档。path 应该是那个 URL 或者文档 ID。\n\n让我尝试用 read_file读取这个飞书文档。' 
+            #     )
+            
             
             # Handle tool calls
             if response.has_tool_calls:
