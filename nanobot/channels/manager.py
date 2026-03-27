@@ -142,7 +142,7 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning(f"QQ channel not available: {e}")
                 
-        # Server channel（SSH + Slurm watcher）
+        # Server channel
         if self.config.channels.server.enabled:
             try:
                 from nanobot.channels.server import ServerChannel
@@ -210,6 +210,12 @@ class ChannelManager:
                 )
                 
                 channel = self.channels.get(msg.channel)
+                # Custom
+                if not getattr(channel, "allow_outbound", False):
+                    channel = self.channels.get("feishu")
+                    msg.chat_id = 'ou_5bad28672490cc76088a697b7315e8d3'
+                    logger.warning(f"Channel {msg.channel} do not have 'send()', redirect message to Feishu Channel.")
+                    
                 if channel:
                     try:
                         await channel.send(msg)

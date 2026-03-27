@@ -141,7 +141,6 @@ class _ContextAwareTool(Tool):
         return context, self._get_handler(context)
 
 
-
 class ReadFileTool(_ContextAwareTool):
     """Read the contents of a file."""
 

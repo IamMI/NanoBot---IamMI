@@ -7,6 +7,9 @@ from typing import Any
 import paramiko
 from datetime import datetime
 from typing import Optional, Callable
+from rich.console import Console
+
+console = Console()
 
 from loguru import logger
 
@@ -22,8 +25,9 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
 # custom
-from nanobot.agent.tools.weather import WeatherTool
 from nanobot.agent.tools.feishu import Feishu_ReadBiTable_Tool
+from nanobot.agent.tools.codex import RunCodexTool
+from nanobot.agent.tools.base import BackgroundTask
 from nanobot.agent.task_registry import TaskRegistry
 from nanobot.agent.tools.watcher import make_watcher_tools
 from nanobot.channels.manager import ChannelManager
@@ -138,6 +142,7 @@ class AgentLoop:
             self.tools.register(CronTool(self.cron_service))
             
         # Custom Feishu BiTable
+        # Ready to deprecated
         feishu_config = kwargs.get("feishu_config", None)
         if feishu_config is not None:
             self.tools.register(Feishu_ReadBiTable_Tool(feishu_config.app_id, feishu_config.app_secret))
@@ -151,6 +156,10 @@ class AgentLoop:
                 poll_interval = server_channel.config.poll_interval,
             ):
                 self.tools.register(tool)
+                
+        # Custom codex opener
+        if server_channel and server_channel.config.hostname:
+            self.tools.register(RunCodexTool(channel=server_channel))
          
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
@@ -159,11 +168,23 @@ class AgentLoop:
         
         while self._running:
             try:
+                # if sys.gettrace() is not None:
                 # Wait for next message
                 msg = await asyncio.wait_for(
                     self.bus.consume_inbound(),
                     timeout=1.0
                 )
+                # else:
+                #     msg = InboundMessage(                                                                                              
+                #         channel='feishu',                                                                                                    
+                #         sender_id='ou_5bad28672490cc76088a697b7315e8d3',                                                                     
+                #         chat_id='ou_5bad28672490cc76088a697b7315e8d3',                                                                       
+                #         content='w',                                                                                                         
+                #         timestamp=datetime(2026, 3, 26, 16, 43, 27, 94945),                                                         
+                #         media=[],                                                                                                            
+                #         metadata={'message_id': 'om_x100b537b5403c0b4c2ea178b007ab76', 'chat_type': 'p2p', 'msg_type': 'text'}               
+                #     )                                                                                                                        
+
                 
                 # Process it
                 try:
@@ -242,23 +263,25 @@ class AgentLoop:
                 messages=messages,
                 tools=self.tools.get_definitions(),
                 model=self.model
-                    )
+            )
             # else:
             #     from nanobot.providers.base import LLMResponse, ToolCallRequest
                 
             #     response = LLMResponse(
-            #         content="好的，让我来读取这个飞书云文档的内容。",                                                                                 
-            #         tool_calls=[                                                                                  
-            #             ToolCallRequest(                                                                          
-            #                 id='call_2d481b52e26c4857b3627543',                                                
-            #                 name='read_file',                                                          
-            #                 arguments={'path': 'https://gxignaxje5.feishu.cn/wiki/VhsrwaRxEiXYd5k0FMfcbMLwnqb', 'context': 'feishu'}                                                                          
-            #             )                                                                                         
-            #         ],                                                                                            
-            #         finish_reason='tool_calls',                                                                   
-            #         usage={'prompt_tokens': 5764, 'completion_tokens': 159, 'total_tokens': 5923},                 
-            #         reasoning_content='用户让我读取一个飞书云文档的内容。用户说可以使用 read_file 来读取云端的文件。\n\n看一下 read_file工具的参数：\n- path: 文件路径\n- context: 可选，默认 "local"，可选值：[\'local\', \'server\',\'feishu\']\n\n所以我可以使用 context="feishu" 来读取飞书文档。path 应该是那个 URL 或者文档 ID。\n\n让我尝试用 read_file读取这个飞书文档。' 
-            #     )
+            #         content='好的，我来启动服务器端的 codex 并让它创建一个 Hello World 的 Python 文件。',                                            
+            #         tool_calls=[                                                                                                                     
+            #             ToolCallRequest(                                                                                                             
+            #                 id='019d255f03d2921d1dc6e7afd9a56212',                                                                                   
+            #                 name='run_codex_on_server',                                                                                              
+            #                 arguments={                                                                                                              
+            #                     'prompts': '请在 ~ 路径下创建一个名为 hello.py 的 Python 文件，内容是打印 "Hello World"。文件内容如下：\n\n```python\nprint("Hello World")\n```'                                                                      
+            #                 }                                                                                                                        
+            #             )                                                                                                                            
+            #         ],                                                                                                                               
+            #         finish_reason='tool_calls',                                                                                                      
+            #         usage={'prompt_tokens': 3357, 'completion_tokens': 135, 'total_tokens': 3492},                                                   
+            #         reasoning_content='用户希望我在服务器端启动 codex，并让它在 ~ 路径下生成一个 Hello world 的 python 文件。\n\n我应该使用 `run_codex_on_server` 工具来完成这个任务。这个工具可以打开服务器端的 codex 并提交任务。\n\n让我构造一个合适的 prompt 来完成这个任务。'                                                                          
+            #     )         
             
             
             # Handle tool calls
@@ -285,6 +308,16 @@ class AgentLoop:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    # Coroutine
+                    if isinstance(result, BackgroundTask):
+                        task = asyncio.create_task(result.coroutine)
+                        self.task_registry.register(
+                            result.name,
+                            task,
+                            on_exit=result.on_exit,
+                        )
+                        result = result.message
+                    # Messages
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )

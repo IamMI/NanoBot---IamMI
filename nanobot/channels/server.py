@@ -4,6 +4,7 @@ import logging
 import stat
 from pathlib import Path, PurePosixPath
 from dataclasses import dataclass, asdict
+import time, shlex
 
 import paramiko
 
@@ -43,6 +44,7 @@ class ServerChannel(BaseChannel):
     """
 
     name = "server"
+    allow_outbound: bool = False    # Can not send
 
     def __init__(self, config: ServerConfig, bus: MessageBus):
         super().__init__(config, bus)
@@ -175,6 +177,44 @@ class ServerChannel(BaseChannel):
         self.write_file(remote_path, new_content)
         return f"Successfully edited {remote_path}"
     
+    # run codex
+    def run_codex(self, prompts: str) -> tuple[str, str, str]:
+        """
+        Submit a task to Codex on the remote server.
+        Returns immediately; Codex runs in the background.
+
+        Returns:
+            ("__SUCCESS__", task_dir, "")  on success
+            ("__ERROR__",   "",       err) on failure
+
+        task_dir is an absolute path, safe to pass directly to SFTP.
+        """
+        try:
+            self.ensure_connected()
+
+            # Resolve $HOME first so task_dir is an absolute path,
+            # ~ is not expanded by SFTP and would cause FileNotFoundError.
+            _, stdout, _ = self._ssh.exec_command("echo $HOME")
+            home = stdout.read().decode().strip()
+            timestamp = time.strftime("%Y_%m_%d_%H_%M_%S")
+            task_dir  = f"{home}/.codex_out/{timestamp}"
+            # parse prompts
+            safe_prompts = shlex.quote(prompts)
+
+            cmd = f"""
+                export NANOBOT=True;
+                source ~/.bashrc;
+                mkdir -p {task_dir};
+                echo 'status: running' > {task_dir}/status.txt;
+                codex exec {safe_prompts} --skip-git-repo-check > {task_dir}/codex.out 2>&1;
+                echo 'status: done' > {task_dir}/status.txt;
+            """
+            self._ssh.exec_command(cmd)
+            return "__SUCCESS__", task_dir, ""
+
+        except Exception as e:
+            return "__ERROR__", "", str(e)
+            
     async def start(self) -> None:
         """Validate config and mark channel as running. Watcher is managed by tools."""
         self._running = True
@@ -247,3 +287,23 @@ class ServerChannel(BaseChannel):
     async def report_complete(self, job_id: str) -> None:
         """Called when a job completes successfully. Silent by default."""
         logger.info("Job %s completed successfully", job_id)
+
+    async def report_codex_done(self, task_dir: str, output: str) -> None:
+        """Report Codex task completion to the agent via infobus."""
+        await self._handle_message(
+            sender_id="server",
+            chat_id=self.config.notify_chat_id or "server",
+            content=(
+                f"[CODEX_DONE] Task completed\n"
+                f"task_dir: {task_dir}\n"
+                f"Output:\n{output}"
+            ),
+            metadata={
+                "source":   "codex",
+                "task_dir": task_dir,
+                "event":    "codex_done",
+            },
+        )
+        logger.info("Codex task done reported to infobus: %s", task_dir)
+
+

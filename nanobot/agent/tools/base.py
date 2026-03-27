@@ -1,8 +1,16 @@
 """Base class for agent tools."""
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Union
+from dataclasses import dataclass 
+from collections.abc import Coroutine
 
+@dataclass
+class BackgroundTask:
+    name:      str
+    coroutine: Coroutine
+    on_exit:   Coroutine
+    message:   str   
 
 class Tool(ABC):
     """
@@ -40,7 +48,7 @@ class Tool(ABC):
         pass
     
     @abstractmethod
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> Union[str, BackgroundTask]:
         """
         Execute the tool with given parameters.
         
@@ -48,7 +56,7 @@ class Tool(ABC):
             **kwargs: Tool-specific parameters.
         
         Returns:
-            String result of the tool execution.
+            Result of the tool execution.
         """
         pass
 

@@ -63,8 +63,9 @@ class ContextBuilder:
         if skills_summary:
             parts.append(f"""# Skills
 
-The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
-Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
+The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool. 
+Skills with available="false" need dependencies installed first - you can try installing them with apt/brew. 
+Process Chinese user requirements by identifying and invoking relevant skills, even if the skill descriptions are in English.
 
 {skills_summary}""")
         

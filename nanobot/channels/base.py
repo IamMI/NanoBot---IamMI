@@ -18,6 +18,7 @@ class BaseChannel(ABC):
     """
     
     name: str = "base"
+    allow_outbound: bool = True
     
     def __init__(self, config: Any, bus: MessageBus):
         """
